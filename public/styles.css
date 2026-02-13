@@ -1,0 +1,262 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Spline+Sans+Mono:wght@400;600&display=swap");
+
+:root {
+  color-scheme: light;
+  --bg: #f4f1ec;
+  --panel: #fffaf4;
+  --ink: #1b1916;
+  --accent: #e07a5f;
+  --accent-2: #3d405b;
+  --muted: #8a817c;
+  --border: rgba(27, 25, 22, 0.1);
+  --shadow: 0 24px 60px rgba(27, 25, 22, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  background: radial-gradient(circle at top, #fff5e1 0%, #f4f1ec 50%, #efe2d2 100%);
+  color: var(--ink);
+  min-height: 100vh;
+}
+
+.app {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px;
+}
+
+.app__header {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.app__header h1 {
+  margin: 0 0 8px;
+  font-size: clamp(2rem, 4vw, 3rem);
+}
+
+.app__header p {
+  margin: 0;
+  color: var(--muted);
+  max-width: 520px;
+}
+
+.status {
+  padding: 12px 16px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.status--ok {
+  background: #f0f7ee;
+  border-color: #7fc97f;
+  color: #1f5f2a;
+}
+
+.status--warn {
+  background: #fff1e9;
+  border-color: #f2b59b;
+  color: #a04a2b;
+}
+
+.app__content {
+  display: grid;
+  grid-template-columns: minmax(240px, 320px) 1fr;
+  gap: 24px;
+}
+
+.panel {
+  background: var(--panel);
+  padding: 24px;
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+  border: 1px solid var(--border);
+}
+
+.panel h2 {
+  margin-top: 0;
+}
+
+.panel ul {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 24px;
+}
+
+.panel li {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  font-size: 0.95rem;
+}
+
+.examples h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: var(--muted);
+}
+
+.chip {
+  display: inline-block;
+  margin: 6px 6px 0 0;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.thread {
+  margin-top: 24px;
+  display: grid;
+  gap: 8px;
+}
+
+.thread input {
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.thread button {
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: none;
+  background: var(--accent-2);
+  color: #fff;
+  cursor: pointer;
+}
+
+.chat {
+  background: #fff;
+  padding: 24px;
+  border-radius: 24px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 560px;
+}
+
+.chat__log {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 8px;
+}
+
+.message {
+  padding: 12px 16px;
+  border-radius: 18px;
+  max-width: 80%;
+  white-space: pre-wrap;
+}
+
+.message--user {
+  align-self: flex-end;
+  background: var(--accent);
+  color: #fff;
+}
+
+.message--assistant {
+  align-self: flex-start;
+  background: #f6f0e8;
+}
+
+.message--system {
+  align-self: center;
+  background: #eee7dd;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.chat__form {
+  display: flex;
+  gap: 12px;
+}
+
+.chat__form input {
+  flex: 1;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  font-size: 1rem;
+}
+
+.chat__form button {
+  padding: 12px 18px;
+  border-radius: 16px;
+  border: none;
+  background: var(--accent-2);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.approval {
+  border: 1px solid #d9bda5;
+  border-radius: 18px;
+  padding: 16px;
+  background: #fff7ef;
+}
+
+.approval__content {
+  display: grid;
+  gap: 12px;
+}
+
+.approval__details {
+  font-family: "Spline Sans Mono", monospace;
+  font-size: 0.85rem;
+  background: #fff;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  white-space: pre-wrap;
+}
+
+.approval__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.approval__actions button {
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: none;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+#editPayload {
+  border-radius: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  font-family: "Spline Sans Mono", monospace;
+}
+
+@media (max-width: 960px) {
+  .app__content {
+    grid-template-columns: 1fr;
+  }
+
+  .app__header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
