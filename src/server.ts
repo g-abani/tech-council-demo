@@ -3,14 +3,30 @@
  * Demonstrates streaming for better user experience
  */
 
+import { randomUUID } from "node:crypto";
 import express, { Request, Response } from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { validateEnvironment } from "./config/model.js";
 import  supervisor  from "./agents/supervisor/supervisor.js";
-import jiraAgent from "./agents/jira/jira-agent.js";
 import { countTokensApproximately, countMessagesTokens, type ConversationStatistics } from "./utils/statistics.js";
 import { supervisorAgent, supervisorResume, getInterruptState } from "./agents/supervisor/supervisor-runner.js";
+import {
+  getRbacSource,
+  pickAadObjectId,
+  pickMemberEmail,
+  pickMemberId,
+  resolveEffectiveUserRole,
+} from "./poc/graphRbacResolve.js";
+import { getMSGraphMembershipService } from "./services/graph/msGraphMembershipService.js";
+import {
+  isMembersDbConfigured,
+  listMembersForDemo,
+} from "./services/membersDb.js";
+import {
+  createStreamInterruptFold,
+  foldStreamInterruptChunk,
+} from "./poc/streamInterrupts.js";
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -45,10 +61,39 @@ if (!validateEnvironment()) {
 }
 
 console.log("✅ Environment validated successfully");
+console.log(
+  `🔐 RBAC source: ${getRbacSource()} (set SECURE_AGENT_RBAC_SOURCE=header only for legacy body userRole; default auto = member + Graph)`
+);
 
 // Initialize supervisor agent once at startup (reuse across requests)
 
 console.log("✅ Supervisor agent initialized");
+
+function rbacBody(body: Record<string, unknown>) {
+  return {
+    userRoleRaw: body.userRole,
+    aadObjectId: pickAadObjectId(body),
+    memberEmail: pickMemberEmail(body),
+    memberId: pickMemberId(body),
+  };
+}
+
+/**
+ * Demo members (PostgreSQL `members` table) for UI picker — email is used for Graph user lookup + RBAC.
+ */
+app.get("/api/members", async (_req: Request, res: Response) => {
+  if (!isMembersDbConfigured()) {
+    res.json({ members: [] });
+    return;
+  }
+  try {
+    const members = await listMembersForDemo();
+    res.json({ members });
+  } catch (e) {
+    console.error("[api/members]", e);
+    res.status(500).json({ error: "Failed to list members" });
+  }
+});
 
 /**
  * Health check endpoint
@@ -59,8 +104,39 @@ app.get("/api/health", (req: Request, res: Response) => {
     timestamp: new Date().toISOString(),
     environment: {
       azureConfigured: !!process.env.AZURE_OPENAI_API_KEY,
+      rbacSource: getRbacSource(),
+      membersDbConfigured: isMembersDbConfigured(),
+      jiraOllama: {
+        baseUrl: process.env.OLLAMA_BASE_URL || "http://127.0.0.1:11434",
+        model:
+          process.env.JIRA_OLLAMA_MODEL?.trim() ||
+          process.env.OLLAMA_MODEL?.trim() ||
+          "llama3.2",
+      },
     },
   });
+});
+
+/**
+ * Debug: Microsoft Graph checkMemberGroups (gated — do not enable in untrusted environments).
+ * Body: { "userId": "<Entra object id or UPN>", "groupId": "<group object id>" }
+ */
+app.post("/api/graph/check-member", async (req: Request, res: Response) => {
+  if (process.env.SECURE_AGENT_GRAPH_DEBUG_ENDPOINT !== "true") {
+    res.status(404).json({ error: "Not found" });
+    return;
+  }
+  const userId =
+    typeof req.body.userId === "string" ? req.body.userId.trim() : "";
+  const groupId =
+    typeof req.body.groupId === "string" ? req.body.groupId.trim() : "";
+  if (!userId || !groupId) {
+    res.status(400).json({ error: "userId and groupId are required" });
+    return;
+  }
+  const svc = getMSGraphMembershipService();
+  const result = await svc.isUserMemberOfGroup(userId, groupId);
+  res.json(result);
 });
 
 app.post("/api/chat/stream2", async (req: Request, res: Response) => {
@@ -69,8 +145,11 @@ app.post("/api/chat/stream2", async (req: Request, res: Response) => {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("Access-Control-Allow-Origin", "*");
   
-  const { message, threadId = "default" } = req.body;
-  console.log(`[Supervisor] User message: ${message}`);
+  const { message, threadId = "default", userRole: userRoleRaw } = req.body;
+  const userRole = await resolveEffectiveUserRole(
+    rbacBody(req.body as Record<string, unknown>)
+  );
+  console.log(`[Supervisor] User message: ${message} (userRole=${userRole})`);
   
   if (!message) {
     res.status(400).json({ error: "Message is required" });
@@ -85,12 +164,14 @@ app.post("/api/chat/stream2", async (req: Request, res: Response) => {
     let fullResponse = "";
     let currentContextWindowSize = 0;  // Track context window from full messages
     console.time("supervisor_stream");
-    const stream = await supervisorAgent({ message, threadId });
+    const stream = await supervisorAgent({ message, threadId, userRole });
     console.timeEnd("supervisor_stream");
     console.time("supervisor_stream_loop");
+    const interruptFold = createStreamInterruptFold();
     for await (const chunk of stream) {
       const state = chunk as any;
-      
+      foldStreamInterruptChunk(interruptFold, chunk);
+
       // Calculate context window from FULL messages array (not just current request)
       if (state.messages && Array.isArray(state.messages)) {
         currentContextWindowSize = countMessagesTokens(state.messages);
@@ -138,8 +219,10 @@ app.post("/api/chat/stream2", async (req: Request, res: Response) => {
     const elapsedTime = Date.now() - startTime;
     console.log(`[Supervisor] Request completed in ${elapsedTime}ms`);
 
-    // Check for pending human-in-the-loop interrupts (durable execution)
-    const pendingInterrupts = await getInterruptState(threadId);
+    // Check for pending HITL: prefer `__interrupt__` seen on streamed chunks (see streamInterrupts.ts)
+    const pendingInterrupts = interruptFold.sawInterruptChannel
+      ? interruptFold.pendingInterrupts
+      : await getInterruptState(threadId);
     if (pendingInterrupts) {
       console.log(`[HITL] Interrupt detected, awaiting human input:`, pendingInterrupts);
       res.write(`data: ${JSON.stringify({
@@ -199,7 +282,10 @@ app.post("/api/chat/resume", async (req: Request, res: Response) => {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("Access-Control-Allow-Origin", "*");
 
-  const { threadId, resumeValue } = req.body;
+  const { threadId, resumeValue, userRole: userRoleRaw } = req.body;
+  const userRole = await resolveEffectiveUserRole(
+    rbacBody(req.body as Record<string, unknown>)
+  );
 
   if (!threadId || resumeValue === undefined) {
     res.status(400).json({ error: "threadId and resumeValue are required" });
@@ -210,10 +296,13 @@ app.post("/api/chat/resume", async (req: Request, res: Response) => {
     console.log(`[HITL Resume] Thread: ${threadId}, Value:`, resumeValue);
     let fullResponse = "";
 
-    const stream = await supervisorResume({ threadId, resumeValue });
+    const stream = await supervisorResume({ threadId, resumeValue, userRole });
 
+    const interruptFold = createStreamInterruptFold();
     for await (const chunk of stream) {
       const state = chunk as any;
+      foldStreamInterruptChunk(interruptFold, chunk);
+
       const latestMessage = state.messages?.[state.messages.length - 1];
 
       if (latestMessage) {
@@ -243,8 +332,11 @@ app.post("/api/chat/resume", async (req: Request, res: Response) => {
       }
     }
 
-    // Check if another interrupt was hit (chained approvals)
-    const pendingInterrupts = await getInterruptState(threadId);
+    // Chained HITL only: do **not** call getState() — task interrupts can linger and duplicate
+    // the approval card. Use only `__interrupt__` observed on the resume stream.
+    const pendingInterrupts = interruptFold.sawInterruptChannel
+      ? interruptFold.pendingInterrupts
+      : null;
     if (pendingInterrupts) {
       res.write(`data: ${JSON.stringify({
         type: "interrupt",
@@ -273,8 +365,11 @@ app.post("/api/chat/resume", async (req: Request, res: Response) => {
  * Uses LangGraph checkpointer for conversation state management
  */
 app.post("/api/chat/stream", async (req: Request, res: Response) => {
-  const { message, threadId = "default" } = req.body;
-  console.log(`[Supervisor] User message: ${message}`);
+  const { message, threadId = "default", userRole: userRoleRaw } = req.body;
+  const userRole = await resolveEffectiveUserRole(
+    rbacBody(req.body as Record<string, unknown>)
+  );
+  console.log(`[Supervisor] User message: ${message} (userRole=${userRole})`);
   if (!message) {
     res.status(400).json({ error: "Message is required" });
     return;
@@ -298,7 +393,8 @@ app.post("/api/chat/stream", async (req: Request, res: Response) => {
       { messages: [{ role: "user", content: message }] },
       {
         streamMode: "values",
-        configurable: { thread_id: threadId }
+        configurable: { thread_id: threadId },
+        context: { userRole },
       }
     );
 
@@ -399,7 +495,21 @@ app.post("/api/chat/stream", async (req: Request, res: Response) => {
  * Uses LangGraph checkpointer for conversation state management
  */
 app.post("/api/chat", async (req: Request, res: Response) => {
-  const { message, threadId = "default" } = req.body;
+  const {
+    message,
+    threadId: threadIdBody = "default",
+    userRole: userRoleRaw,
+    freshThread,
+    newThread,
+  } = req.body;
+  /** Avoid stale LangGraph checkpoints mid–tool-turn (INVALID_TOOL_RESULTS) during demos */
+  const threadId =
+    freshThread === true || newThread === true
+      ? `demo-${randomUUID()}`
+      : threadIdBody;
+  const userRole = await resolveEffectiveUserRole(
+    rbacBody(req.body as Record<string, unknown>)
+  );
 
   if (!message) {
     res.status(400).json({ error: "Message is required" });
@@ -412,6 +522,7 @@ app.post("/api/chat", async (req: Request, res: Response) => {
       configurable: {
         thread_id: threadId,
       },
+      context: { userRole },
     };
 
     // Track elapsed time for supervisor invoke
@@ -436,8 +547,17 @@ app.post("/api/chat", async (req: Request, res: Response) => {
     });
   } catch (error) {
     console.error("[Chat Error]", error);
+    const msg = error instanceof Error ? error.message : String(error);
+    const incompleteToolTurn =
+      msg.includes("tool_call_id") ||
+      msg.includes("INVALID_TOOL_RESULTS") ||
+      msg.includes("tool_calls");
     res.status(500).json({
-      error: error instanceof Error ? error.message : "An error occurred",
+      error: msg,
+      ...(incompleteToolTurn && {
+        hint:
+          "Checkpoint for this threadId has an incomplete tool turn (AI emitted tool_calls without matching tool results). Use a new threadId, or POST with freshThread:true to auto-generate one.",
+      }),
     });
   }
 });
@@ -492,7 +612,11 @@ app.listen(port, () => {
   console.log(`  - GET  /api/agents    - Agent information`);
   console.log(`  - POST /api/chat        - Non-streaming chat`);
   console.log(`  - POST /api/chat/stream - Streaming chat (SSE)`);
-  console.log(`  - POST /api/chat/resume - Resume after HITL interrupt (SSE)\n`);
+  console.log(`  - POST /api/chat/resume - Resume after HITL interrupt (SSE)`);
+  if (process.env.SECURE_AGENT_GRAPH_DEBUG_ENDPOINT === "true") {
+    console.log(`  - POST /api/graph/check-member - Graph checkMemberGroups (debug)`);
+  }
+  console.log("");
 });
 
 // Graceful shutdown

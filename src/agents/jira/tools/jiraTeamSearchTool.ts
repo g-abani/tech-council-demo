@@ -1,6 +1,7 @@
 import { DynamicStructuredTool } from "langchain";
 import { z } from "zod";
 import { getJiraService } from "../../../services/external/jiraService.js";
+import { zOptionalBooleanDefault, zOptionalString } from "../../../utils/zodFromLlm.js";
 
 
 //returnDirect: true
@@ -9,8 +10,12 @@ export const jiraTeamSearchTool = new DynamicStructuredTool({
   description: "Search for JIRA issues by team name. ONLY use this when you have a SPECIFIC team name (e.g., 'Vendors', 'Merch', 'Engineering', 'GWP'). DO NOT use if user hasn't provided a team name - ask for it first instead. By default returns open issues only, unless user specifically asks for 'all' issues. Can filter by status (e.g., 'To Do', 'In Development').",
   schema: z.object({
     teamName: z.string().describe("The SPECIFIC team name (e.g., 'Vendors', 'Merch', 'Engineering'). Must be a team name, not a full sentence."),
-    includeAllStatuses: z.boolean().optional().describe("Set to true if user asks for 'all' issues including Done/Closed/Resolved. Default is false (open issues only)."),
-    status: z.string().optional().describe("Optional status to filter by (e.g., 'To Do', 'In Development', 'In Progress', 'Done')")
+    includeAllStatuses: zOptionalBooleanDefault(false).describe(
+      "Set to true if user asks for 'all' issues including Done/Closed/Resolved. Default is false (open issues only)."
+    ),
+    status: zOptionalString.describe(
+      "Optional status to filter by (e.g., 'To Do', 'In Development', 'In Progress', 'Done')"
+    ),
   }) as any,
   returnDirect: true,
   func: async ({ teamName, includeAllStatuses = false, status }: { teamName: string; includeAllStatuses?: boolean; status?: string }) => {

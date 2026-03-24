@@ -6,11 +6,21 @@ export const jiraIssueDetailTool = new DynamicStructuredTool({
   name: "jira_issue_detail",
   description: "Get detailed information about a specific JIRA issue by its key (e.g., DOTCOM-12345). Returns full details including description, status, assignee, priority, labels, comments, etc.",
   schema: z.object({
-    issueKey: z.string().describe("The JIRA issue key (e.g., 'DOTCOM-166263')")
+    issueKey: z
+      .union([z.string(), z.null()])
+      .transform((v) => (v == null ? "" : String(v).trim()))
+      .describe("The JIRA issue key (e.g., 'DOTCOM-166263')"),
   }) as any,
   returnDirect: true,
   func: async ({ issueKey }: { issueKey: string }) => {
     try {
+      if (!issueKey) {
+        return JSON.stringify({
+          error: "Missing issue key",
+          message: "Provide a JIRA issue key such as DOTCOM-12345.",
+          requiresClarification: true,
+        });
+      }
       // Use the JIRA service to get issue details
       console.log("jira_issue_detail_tool ", issueKey);
       const jiraService = getJiraService();
@@ -42,6 +52,6 @@ export const jiraIssueDetailTool = new DynamicStructuredTool({
         stack: error.stack
       });
     }
-  }
-} as any);
+  },
+}) as any;
 

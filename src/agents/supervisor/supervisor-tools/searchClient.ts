@@ -9,12 +9,14 @@ let _searchClient: SearchClient<object> | null = null;
 export function getSearchClient(): SearchClient<object> {
   if (!_searchClient) {
     const endpoint = process.env.AZURE_SEARCH_ENDPOINT;
-    const key = process.env.AZURE_SEARCH_KEY;
+    // Match .env.example (AZURE_SEARCH_API_KEY); keep AZURE_SEARCH_KEY as legacy alias
+    const key =
+      process.env.AZURE_SEARCH_API_KEY || process.env.AZURE_SEARCH_KEY;
     const index = process.env.AZURE_SEARCH_INDEX;
 
     if (!endpoint || !key || !index) {
       throw new Error(
-        "Azure Search is not configured. Set AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_KEY, and AZURE_SEARCH_INDEX in your .env file."
+        "Azure Search is not configured. Set AZURE_SEARCH_ENDPOINT, AZURE_SEARCH_API_KEY (or legacy AZURE_SEARCH_KEY), and AZURE_SEARCH_INDEX in your .env file."
       );
     }
 

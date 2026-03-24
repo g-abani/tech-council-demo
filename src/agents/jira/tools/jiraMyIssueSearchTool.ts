@@ -6,8 +6,20 @@ export const jiraMyIssueSearchTool = new DynamicStructuredTool({
   name: "jira_my_issue_search",
   description: "Search for the current user's recent JIRA issues. Returns the 5 most recent issues assigned to the current user. By DEFAULT returns all open issues (To Do, In Development, In Progress). ONLY use status parameter when user EXPLICITLY mentions a specific status like 'my Done issues' or 'my To Do tasks'.",
   schema: z.object({
-    userid: z.string().default("behera").describe("JIRA userid to search issues for"),
-    status: z.string().default("").describe("Optional status to filter by. ONLY use if user explicitly mentions a status (e.g., 'my Done issues', 'my To Do tasks'). Leave empty for general queries like 'show my tickets'."),
+    userid: z
+      .union([z.string(), z.null()])
+      .optional()
+      .transform((v) =>
+        v == null || String(v).trim() === "" ? "behera" : String(v)
+      )
+      .describe("JIRA userid to search issues for"),
+    status: z
+      .union([z.string(), z.null()])
+      .optional()
+      .transform((v) => (v == null ? "" : v))
+      .describe(
+        "Optional status to filter by. ONLY use if user explicitly mentions a status (e.g., 'my Done issues', 'my To Do tasks'). Leave empty for general queries like 'show my tickets'."
+      ),
   }),
   returnDirect: true,
   func: async (

@@ -1,6 +1,7 @@
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import { getJiraService } from "../../../services/external/jiraService.js";
+import { zOptionalString } from "../../../utils/zodFromLlm.js";
 
 export const jiraAssigneeSearchTool = new DynamicStructuredTool({
   name: "jira_assignee_search",
@@ -8,7 +9,9 @@ export const jiraAssigneeSearchTool = new DynamicStructuredTool({
   returnDirect: true,
   schema: z.object({
     assigneeName: z.string().describe("The assignee's display name (e.g., 'John Doe', 'Jane Smith', 'Gunjan', 'Tiwari'). Can be single name or full name as it appears in JIRA."),
-    status: z.string().optional().describe("Optional status to filter by (e.g., 'To Do', 'In Development', 'In Progress', 'Done')")
+    status: zOptionalString.describe(
+      "Optional status to filter by (e.g., 'To Do', 'In Development', 'In Progress', 'Done')"
+    ),
   }) as any,
   func: async ({ assigneeName, status }: { assigneeName: string; status?: string }) => {
     try {

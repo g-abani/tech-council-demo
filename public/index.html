@@ -376,6 +376,46 @@
             gap: 12px;
         }
 
+        .role-toolbar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+        }
+
+        .role-label {
+            font-size: 13px;
+            font-weight: 600;
+            color: #64748b;
+        }
+
+        #memberSelect {
+            padding: 8px 12px;
+            border-radius: 8px;
+            border: 2px solid var(--border-color);
+            font-size: 13px;
+            font-family: inherit;
+            background: #fff;
+            cursor: pointer;
+            min-width: 280px;
+            max-width: 100%;
+            flex: 1;
+        }
+
+        #memberSelect:focus {
+            outline: none;
+            border-color: var(--primary-color);
+        }
+
+        .role-hint {
+            font-size: 11px;
+            color: #94a3b8;
+            width: 100%;
+            margin-top: -4px;
+            margin-bottom: 4px;
+        }
+
         #messageInput {
             flex: 1;
             padding: 12px 16px;
@@ -1052,6 +1092,13 @@
                 </div>
 
                 <div class="input-container">
+                    <div class="role-toolbar">
+                        <label for="memberSelect" class="role-label">Demo user (Graph RBAC)</label>
+                        <select id="memberSelect" title="Pick a row from PostgreSQL members — server resolves Entra user by email, then group membership">
+                            <option value="">— Select member —</option>
+                        </select>
+                    </div>
+                    <p class="role-hint" id="memberSelectHint">Loads from <code>GET /api/members</code> (<code>DATABASE_URL</code>). Some users are <strong>universal admins</strong> (all tools) via server allowlist; others use Microsoft Graph group RBAC when <code>SECURE_AGENT_RBAC_SOURCE=graph</code> or <code>auto</code>.</p>
                     <div class="input-wrapper">
                         <input 
                             type="text" 
@@ -1088,6 +1135,51 @@
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
         const statusText = document.getElementById('statusText');
+        const memberSelect = document.getElementById('memberSelect');
+        const memberSelectHint = document.getElementById('memberSelectHint');
+
+        /** Selected DB member id + email → server (universal admin allowlist, then Graph RBAC) */
+        function attachMemberEmail(body) {
+            const sel = memberSelect;
+            if (!sel) return body;
+            const email = typeof sel.value === 'string' ? sel.value.trim() : '';
+            if (email) body.memberEmail = email;
+            const opt = sel.selectedOptions && sel.selectedOptions[0];
+            const mid = opt && opt.dataset && opt.dataset.memberId ? String(opt.dataset.memberId).trim() : '';
+            if (mid) body.memberId = mid;
+            return body;
+        }
+
+        async function loadDemoMembers() {
+            if (!memberSelect) return;
+            try {
+                const res = await fetch('/api/members');
+                if (!res.ok) return;
+                const data = await res.json();
+                const members = Array.isArray(data.members) ? data.members : [];
+                while (memberSelect.options.length > 1) {
+                    memberSelect.remove(1);
+                }
+                for (const m of members) {
+                    const email = m && m.email ? String(m.email) : '';
+                    if (!email) continue;
+                    const label = [m.lastName, m.firstName].filter(Boolean).join(', ')
+                        + (email ? ` (${email})` : '');
+                    const opt = document.createElement('option');
+                    opt.value = email;
+                    if (m.id) opt.dataset.memberId = String(m.id);
+                    opt.textContent = label || email;
+                    memberSelect.appendChild(opt);
+                }
+                if (members.length === 0 && memberSelectHint) {
+                    memberSelectHint.textContent = 'No rows returned — set DATABASE_URL and run scripts/members.sql, or add nthakur/adisharm to the members table.';
+                }
+            } catch (e) {
+                console.warn('loadDemoMembers:', e);
+            }
+        }
+
+        loadDemoMembers();
         
         // Use thread_id for conversation persistence via checkpointer
         const threadId = 'user-' + Math.random().toString(36).substring(7);
@@ -1522,18 +1614,60 @@
 
         // ─── Human-in-the-Loop: Interrupt handling ───
 
+        /** LangChain `humanInTheLoopMiddleware` — resume with `{ decisions: [...] }` */
+        function isHitlInterrupt(info) {
+            return info && Array.isArray(info.actionRequests) && Array.isArray(info.reviewConfigs);
+        }
+
+        /** Remove the whole chat row for an interrupt card (avatar + card + time) so the UI does not stay stuck after approve/reject. */
+        function dismissInterruptCard(cardId) {
+            const card = document.getElementById(cardId);
+            if (!card) return;
+            const row = card.closest('.message');
+            if (row && row.parentNode) row.parentNode.removeChild(row);
+        }
+
+        /**
+         * Accumulate SSE chunks: a single `data: {...}\\n` line may be split across network reads.
+         * Without this, `done` / `interrupt` events are often never parsed and the UI stays stuck.
+         */
+        function appendSseAndTakeLines(sseBuffer, chunkText) {
+            let buf = sseBuffer + chunkText;
+            const lines = [];
+            let idx;
+            while ((idx = buf.indexOf('\n')) >= 0) {
+                lines.push(buf.slice(0, idx).replace(/\r$/, ''));
+                buf = buf.slice(idx + 1);
+            }
+            return { buffer: buf, lines };
+        }
+
         /**
          * Show an approval card in the chat for a HITL interrupt.
-         * The card has an editable query field + Approve / Reject buttons.
+         * - Legacy (research tool): editable query + `{ action, query }` resume.
+         * - LangChain HITL middleware: read-only tool args + `{ decisions: [...] }` resume.
          */
         function showInterruptCard(interruptData) {
             removeTypingIndicator();
 
             const info = interruptData[0]; // first (and typically only) interrupt
-            const query = info.query || '';
-            const message = info.message || 'The agent is requesting your approval to proceed.';
+            const isHitl = isHitlInterrupt(info);
+            let query = '';
+            let message = '';
+            if (isHitl) {
+                const ar = info.actionRequests && info.actionRequests[0];
+                message = (ar && ar.description) ? ar.description : 'A tool call requires your approval.';
+                query = JSON.stringify((ar && ar.args) ? ar.args : {}, null, 2);
+            } else {
+                query = info.query || '';
+                message = info.message || 'The agent is requesting your approval to proceed.';
+            }
 
             const cardId = 'interrupt-' + Date.now();
+            const queryLabel = isHitl ? 'Tool arguments (read-only)' : 'Query (editable)';
+            const queryFieldHtml = isHitl
+                ? `<textarea class="interrupt-query-input" id="${cardId}-query" rows="6" readonly>${escapeHtml(query)}</textarea>`
+                : `<input class="interrupt-query-input" id="${cardId}-query" type="text" value="${escapeHtml(query)}" />`;
 
             const cardDiv = document.createElement('div');
             cardDiv.className = 'message assistant';
@@ -1546,14 +1680,14 @@
                     </svg>
                 </div>
                 <div class="message-content" style="background: transparent; padding: 0;">
-                    <div class="interrupt-card" id="${cardId}">
+                    <div class="interrupt-card" id="${cardId}" data-resume-kind="${isHitl ? 'hitl' : 'legacy'}">
                         <div class="interrupt-header">
                             <span class="interrupt-icon">⏸️</span>
                             <span class="interrupt-title">Approval Required</span>
                         </div>
                         <div class="interrupt-message">${escapeHtml(message)}</div>
-                        <div class="interrupt-query-label">Query (editable)</div>
-                        <input class="interrupt-query-input" id="${cardId}-query" type="text" value="${escapeHtml(query)}" />
+                        <div class="interrupt-query-label">${queryLabel}</div>
+                        ${queryFieldHtml}
                         <div class="interrupt-actions">
                             <button class="interrupt-btn interrupt-btn-approve" onclick="handleResume('${cardId}', true)">✓ Approve</button>
                             <button class="interrupt-btn interrupt-btn-reject" onclick="handleResume('${cardId}', false)">✕ Reject</button>
@@ -1583,93 +1717,116 @@
             const queryInput = document.getElementById(cardId + '-query');
             const editedQuery = queryInput ? queryInput.value.trim() : null;
 
-            // Disable the card
-            card.classList.add('resolved');
-            const buttons = card.querySelectorAll('.interrupt-btn');
-            buttons.forEach(btn => btn.disabled = true);
+            const resumeKind = card.getAttribute('data-resume-kind') || 'legacy';
+            /** @type {object} */
+            let resumeValue;
+            if (resumeKind === 'hitl') {
+                resumeValue = approved
+                    ? { decisions: [{ type: 'approve' }] }
+                    : { decisions: [{ type: 'reject', message: 'Rejected by user' }] };
+            } else {
+                resumeValue = approved
+                    ? { action: 'approve', query: editedQuery || undefined }
+                    : { action: 'reject' };
+            }
 
-            // Show status on the card
-            const statusDiv = document.createElement('div');
-            statusDiv.className = 'interrupt-status';
-            statusDiv.textContent = approved ? '✓ Approved — resuming agent…' : '✕ Rejected — cancelling action…';
-            card.appendChild(statusDiv);
-
-            // Build the resume value
-            const resumeValue = approved
-                ? { action: 'approve', query: editedQuery || undefined }
-                : { action: 'reject' };
+            // Remove the approval card immediately so it never stays on screen if SSE lines are split or `done` is missed.
+            dismissInterruptCard(cardId);
 
             isProcessing = true;
             sendButton.disabled = true;
             messageInput.disabled = true;
+            if (memberSelect) memberSelect.disabled = true;
             addTypingIndicator();
 
             try {
                 const response = await fetch('/api/chat/resume', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ threadId, resumeValue }),
+                    body: JSON.stringify(attachMemberEmail({
+                        threadId,
+                        resumeValue,
+                    })),
                 });
 
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
+                let sseBuffer = '';
                 let assistantMessage = null;
                 let fullResponse = '';
+
+                function handleResumePayload(data) {
+                    if (data.type === 'message' && (data.role === 'assistant' || data.role === 'ai' || data.role === 'tool')) {
+                        if (!assistantMessage) removeTypingIndicator();
+
+                        fullResponse = data.content;
+                        const { content: displayContent } = unwrapAgentResponse(fullResponse);
+                        const isJira = isJiraContent(fullResponse);
+                        const contentToShow = displayContent || fullResponse;
+
+                        if (!assistantMessage) {
+                            assistantMessage = addMessage('assistant', fullResponse);
+                            if (!isJira) {
+                                const mc = assistantMessage.querySelector('.message-content');
+                                if (mc) mc.classList.add('streaming');
+                            }
+                        } else {
+                            const textEl = assistantMessage.querySelector('.message-text');
+                            if (isJira) {
+                                textEl.innerHTML = formatJiraContent(fullResponse);
+                            } else {
+                                textEl.textContent = typeof contentToShow === 'string' ? contentToShow : JSON.stringify(contentToShow);
+                            }
+                        }
+                    } else if (data.type === 'tool_call') {
+                        console.log('Resume tool calls:', data.tools);
+                    } else if (data.type === 'interrupt') {
+                        showInterruptCard(data.interrupts);
+                    } else if (data.type === 'done') {
+                        if (assistantMessage) {
+                            const mc = assistantMessage.querySelector('.message-content');
+                            if (mc) mc.classList.remove('streaming');
+                        }
+                        if (data.statistics) updateStatistics(data.statistics);
+                    } else if (data.type === 'error') {
+                        removeTypingIndicator();
+                        addError(data.error);
+                    }
+                }
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
+                    const chunk = decoder.decode(value, { stream: true });
+                    const { buffer, lines } = appendSseAndTakeLines(sseBuffer, chunk);
+                    sseBuffer = buffer;
 
                     for (const line of lines) {
                         if (!line.startsWith('data: ')) continue;
                         try {
                             const data = JSON.parse(line.slice(6));
-
-                            if (data.type === 'message' && (data.role === 'assistant' || data.role === 'ai' || data.role === 'tool')) {
-                                if (!assistantMessage) removeTypingIndicator();
-
-                                fullResponse = data.content;
-                                const { content: displayContent } = unwrapAgentResponse(fullResponse);
-                                const isJira = isJiraContent(fullResponse);
-                                const contentToShow = displayContent || fullResponse;
-
-                                if (!assistantMessage) {
-                                    assistantMessage = addMessage('assistant', fullResponse);
-                                    if (!isJira) {
-                                        const mc = assistantMessage.querySelector('.message-content');
-                                        if (mc) mc.classList.add('streaming');
-                                    }
-                                } else {
-                                    const textEl = assistantMessage.querySelector('.message-text');
-                                    if (isJira) {
-                                        textEl.innerHTML = formatJiraContent(fullResponse);
-                                    } else {
-                                        textEl.textContent = typeof contentToShow === 'string' ? contentToShow : JSON.stringify(contentToShow);
-                                    }
-                                }
-                            } else if (data.type === 'tool_call') {
-                                console.log('Resume tool calls:', data.tools);
-                            } else if (data.type === 'interrupt') {
-                                // Chained interrupt — show another approval card
-                                showInterruptCard(data.interrupts);
-                                return; // exit — card handles next resume
-                            } else if (data.type === 'done') {
-                                if (assistantMessage) {
-                                    const mc = assistantMessage.querySelector('.message-content');
-                                    if (mc) mc.classList.remove('streaming');
-                                }
-                                if (data.statistics) updateStatistics(data.statistics);
-                            } else if (data.type === 'error') {
-                                removeTypingIndicator();
-                                addError(data.error);
+                            handleResumePayload(data);
+                            if (data.type === 'interrupt') {
+                                return;
                             }
                         } catch (e) {
                             console.error('Resume SSE parse error:', e);
+                        }
+                    }
+                }
+
+                // Trailing buffer without final newline (rare)
+                if (sseBuffer.trim()) {
+                    const line = sseBuffer.replace(/\r$/, '');
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            handleResumePayload(data);
+                        } catch (e) {
+                            console.error('Resume SSE tail parse error:', e);
                         }
                     }
                 }
@@ -1681,6 +1838,7 @@
                 isProcessing = false;
                 sendButton.disabled = false;
                 messageInput.disabled = false;
+                if (memberSelect) memberSelect.disabled = false;
                 messageInput.focus();
             }
         }
@@ -1693,6 +1851,7 @@
             isProcessing = true;
             sendButton.disabled = true;
             messageInput.disabled = true;
+            if (memberSelect) memberSelect.disabled = true;
 
             // Add user message
             addMessage('user', message);
@@ -1706,10 +1865,10 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
+                    body: JSON.stringify(attachMemberEmail({
                         message,
                         threadId,  // Use thread ID for conversation persistence
-                    }),
+                    })),
                 });
 
                 if (!response.ok) {
@@ -1718,6 +1877,7 @@
 
                 const reader = response.body.getReader();
                 const decoder = new TextDecoder();
+                let sseBuffer = '';
                 
                 let assistantMessage = null;
                 let fullResponse = '';
@@ -1726,8 +1886,9 @@
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\n');
+                    const chunk = decoder.decode(value, { stream: true });
+                    const { buffer, lines } = appendSseAndTakeLines(sseBuffer, chunk);
+                    sseBuffer = buffer;
 
                     for (const line of lines) {
                         if (line.startsWith('data: ')) {
@@ -1808,6 +1969,46 @@
                     }
                 }
 
+                if (sseBuffer.trim()) {
+                    const line = sseBuffer.replace(/\r$/, '');
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            if (data.type === 'message' && (data.role === 'assistant' || data.role === 'ai' || data.role === 'tool')) {
+                                if (!assistantMessage) removeTypingIndicator();
+                                fullResponse = data.content;
+                                const { content: displayContent } = unwrapAgentResponse(fullResponse);
+                                const isJira = isJiraContent(fullResponse);
+                                const contentToShow = displayContent || fullResponse;
+                                if (!assistantMessage) {
+                                    assistantMessage = addMessage('assistant', fullResponse);
+                                    if (!isJira) {
+                                        const messageContent = assistantMessage.querySelector('.message-content');
+                                        if (messageContent) messageContent.classList.add('streaming');
+                                    }
+                                } else {
+                                    const textElement = assistantMessage.querySelector('.message-text');
+                                    if (isJira) textElement.innerHTML = formatJiraContent(fullResponse);
+                                    else textElement.textContent = typeof contentToShow === 'string' ? contentToShow : JSON.stringify(contentToShow);
+                                }
+                            } else if (data.type === 'interrupt') {
+                                showInterruptCard(data.interrupts);
+                            } else if (data.type === 'done') {
+                                if (assistantMessage) {
+                                    const messageContent = assistantMessage.querySelector('.message-content');
+                                    if (messageContent) messageContent.classList.remove('streaming');
+                                }
+                                if (data.statistics) updateStatistics(data.statistics);
+                            } else if (data.type === 'error') {
+                                removeTypingIndicator();
+                                addError(data.error);
+                            }
+                        } catch (e) {
+                            console.error('SSE tail parse error:', e);
+                        }
+                    }
+                }
+
             } catch (error) {
                 console.error('Error:', error);
                 removeTypingIndicator();
@@ -1816,6 +2017,7 @@
                 isProcessing = false;
                 sendButton.disabled = false;
                 messageInput.disabled = false;
+                if (memberSelect) memberSelect.disabled = false;
                 messageInput.focus();
             }
         }

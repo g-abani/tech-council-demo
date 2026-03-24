@@ -3,6 +3,7 @@
  * Demonstrates context engineering through proper model setup
  */
 
+import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { AzureChatOpenAI } from "@langchain/openai";
 import dotenv from "dotenv";
 
@@ -29,6 +30,15 @@ export function createAzureModel(temperature: number = 0.7, deploymentName?: str
 }
 
 /**
+ * Chat model for supervisor / workers / summarization: **Azure OpenAI** only.
+ * JIRA paths use Ollama via {@link getJiraOllamaModel} / {@link createJiraOllamaModel} in `src/poc/jiraOllamaModel.ts`
+ * and supervisor intent routing in `src/poc/dynamicModelMiddleware.ts`.
+ */
+export function createChatModel(temperature: number = 0.7, deploymentName?: string): BaseChatModel {
+  return createAzureModel(temperature, deploymentName);
+}
+
+/**
  * Validate that all required environment variables are set
  */
 export function validateEnvironment(): boolean {
@@ -47,4 +57,3 @@ export function validateEnvironment(): boolean {
 
   return true;
 }
-

@@ -4,7 +4,7 @@
  */
 
 import { createAgent } from "langchain";
-import { createAzureModel } from "../config/model.js";
+import { createChatModel } from "../config/model.js";
 import { researchTool, calculatorTool, textAnalysisTool } from "./supervisor/tools.js";
 import { MemorySaver } from "@langchain/langgraph";
 
@@ -13,7 +13,7 @@ import { MemorySaver } from "@langchain/langgraph";
  * Context engineering: Clear system prompt defining agent's role and capabilities
  */
 export function createResearchAgent() {
-  const model = createAzureModel(0.7);
+  const model = createChatModel(0.7);
   
   const agent = createAgent({
     model,
@@ -48,7 +48,7 @@ When given a task:
 export function createCalculatorAgent() {
   console.log("Creating Calculator Agent");
   const checkpointer = new MemorySaver();
-  const model = createAzureModel(0.3); // Lower temperature for more deterministic calculations
+  const model = createChatModel(0.3); // Lower temperature for more deterministic calculations
   
   const agent = createAgent({
     model,
